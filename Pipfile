@@ -1,0 +1,36 @@
+[[source]]
+name = "pypi"
+url = "https://nexus.alm.europe.cloudcenter.corp/repository/pypi-public/simple"
+verify_ssl = false
+
+[dev-packages]
+
+[packages]
+pytest = "*"
+coverage = "~=7.6.6"
+pytest-cov = "*"
+fastapi-health = "~=0.4.0"
+uvicorn = {version = "~=0.29.0", extras = ["standard"]}
+httpx = "~=0.27.0"
+gunicorn = "*"
+darwin-logging = "*"
+darwin-composer = "*"
+aiohttp = "*"
+ecs-logging = "==2.1.0"
+pydantic = "==1.10.7"
+pytz = "==2023.3"
+requests = "==2.31.0"
+requests-oauthlib = "==1.3.1"
+six = "==1.16.0"
+urllib3 = "==1.26.10"
+pymongo = "==4.6.3"
+hvac = "*"
+shuttlelib = "*"
+pytest-env = "*"
+pytest-asyncio = "*"
+websocket = "*"
+pipdeptree = "*"
+websocket-client = "*"
+kubernetes = "*"
+wheel = "*"
+fastapi = "*"
