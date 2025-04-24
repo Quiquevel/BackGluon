@@ -25,42 +25,22 @@ async def getheapdump_api(functional_environment, cluster, region, namespace, po
         automatic_delete()
         logger.info(f"I'm going to get a HeapDump from pod {pod} from namespace {namespace}")
         logger.info(f"Using Kubernetes API with url: {url}")
-        data_obtained = await generate_heapdump_api(kube_client, namespace, pod[0], action, delete)
+        data_obtained = await generate_heapdump(kube_client, namespace, pod[0], action, delete)
         print("Return of heapdump function")
         return data_obtained
     else:
         logger.error("The 'ACTION' parameter has not been set or has an invalid value")
         
-async def generate_heapdump_api(kube_client, namespace, pod, action, delete):
-    # Primero, eliminar cualquier archivo existente
-    cleanup_command = "rm -f /opt/produban/heapdumpPRO /opt/produban/heapdumpPRO.gz"
-    
-    try:
-        stream(
-            kube_client.connect_get_namespaced_pod_exec,
-            pod,
-            namespace,
-            command=["/bin/bash", "-c", cleanup_command],
-            stderr=True,
-            stdin=False,
-            stdout=True,
-            tty=False
-        )
-        logger.info(f"Old heapdump files removed in pod {pod}")
-    except Exception as e:
-        logger.warning(f"Could not clean previous heapdump: {e}")
+async def generate_heapdump(kube_client, namespace, pod, delete):
+    if delete:
+        delete_pod(kube_client, namespace, pod)
 
-    # Luego ejecutar la generación del heapdump
     dump_command = "jcmd 1 GC.heap_dump /opt/produban/heapdumpPRO; gzip -f /opt/produban/heapdumpPRO"
 
-    exec_command = [
-        "/bin/bash",
-        "-c",
-        dump_command
-    ]
-
     try:
-        resp = stream(
+        # Ejecutar el comando en el pod para generar el HeapDump
+        exec_command = ["/bin/bash", "-c", dump_command]
+        stream(
             kube_client.connect_get_namespaced_pod_exec,
             pod,
             namespace,
@@ -70,44 +50,54 @@ async def generate_heapdump_api(kube_client, namespace, pod, action, delete):
             stdout=True,
             tty=False
         )
-        logger.info(f"Command output: {resp}")
+        logger.info(f"HeapDump generado y comprimido en pod {pod}")
 
-        if "command not found" in resp.lower() or "exit status 1" in resp:
-            return JSONResponse(
-                content={"status": "error", "message": "Required tools jcmd and gzip are not available in the pod."},
-                status_code=500
-            )
+        # Ruta del archivo generado en el pod
+        heapdump_path = "/opt/produban/heapdumpPRO.gz"
 
-        # Descargar el archivo generado
-        with open("heapdumpPRO.gz", "wb") as file:
-            try:
-                if isinstance(resp, str):
-                    file.write(resp.encode("utf-8"))
-                elif hasattr(resp, "read"):
-                    file.write(resp.read())
-                else:
-                    raise TypeError(f"Unsupported type for `resp`: {type(resp)}")
-            except Exception as e:
-                logger.error(f"Error writing file: {e}")
-                return JSONResponse(
-                    content={"status": "error", "message": "Failed to write heapdump file."},
-                    status_code=500
-                )
-
-        original_file = "heapdumpPRO.gz"
-        new_file = await rename_and_move_files(namespace, pod, original_file, action)
-
-        if delete:
-            delete_pod(kube_client, namespace, pod)
-
-        return FileResponse(
-            f"/app/downloads/{namespace}/{new_file}",
-            media_type=MEDIA_TYPE_OCTET_STREAM,
-            filename=new_file
+        # Verificar si el archivo existe en el pod remoto
+        exec_command = ["ls", heapdump_path]
+        response = stream(
+            kube_client.connect_get_namespaced_pod_exec,
+            pod,
+            namespace,
+            command=exec_command,
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False
         )
+        if "No such file or directory" in response.read_stdout():
+            logger.error(f"El archivo {heapdump_path} no existe en el pod {pod}.")
+            return JSONResponse(content={"status": "error", "message": "Archivo no encontrado en el pod remoto"}, status_code=500)
 
+        # Descargar el archivo desde el pod remoto al contenedor del microservicio
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".gz") as temp_file:
+            temp_file_path = temp_file.name
+            exec_command = ["cat", heapdump_path]
+            response = stream(
+                kube_client.connect_get_namespaced_pod_exec,
+                pod,
+                namespace,
+                command=exec_command,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+                _preload_content=False  # Asegúrate de que esto esté configurado correctamente
+            )
+            
+            # Leer los datos del objeto WSClient y escribirlos en el archivo temporal
+            while True:
+                chunk = response.read_stdout()
+                if not chunk:  # Si no hay más datos, salir del bucle
+                    logger.error("No se recibieron datos del pod remoto.")
+                    return JSONResponse(content={"status": "error", "message": "No se recibieron datos del pod remoto"}, status_code=500)
+                temp_file.write(chunk)
+
+        logger.info(f"HeapDump descargado desde el pod {pod} a {temp_file_path}")
     except Exception as e:
-        logger.error(f"Error during heapdump generation: {e}")
+        logger.error(f"Error al generar o preparar el HeapDump para descarga: {e}")
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
         
 async def rename_and_move_files(namespace, pod, original_file, action):
